@@ -118,6 +118,19 @@ export function makeSettingsCard(kit: ViewKit): (props: SettingsCardProps) => Re
                 ]}
                 onPick={(id) => { props.set?.('defaultTrendMode', id) }}
               />
+              {/* ≀ axis-clip (grouped here with the Trend Chart options, above File Activity): the control for the
+                  Trend chart's adaptive outlier clip. 'on' (default) keeps it active; 'off' disables it (the
+                  Context tab reads this live). */}
+              <PrefRow
+                label={t('settings.clipAxis')}
+                value={state.clipAxis}
+                disabled={disabled}
+                options={[
+                  { id: 'on', label: t('settings.on') },
+                  { id: 'off', label: t('settings.off') },
+                ]}
+                onPick={(id) => { props.set?.('defaultClipAxis', id) }}
+              />
               <PrefRow
                 label={t('settings.fileSort')}
                 value={state.fileSort}

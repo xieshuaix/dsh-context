@@ -12,11 +12,11 @@
  * members keeps the dependency graph honest.
  */
 
-import type { DefaultFileSort, DefaultGranularity, DefaultTrendMode, SettingsField } from '../shared/types'
+import type { DefaultClipAxis, DefaultFileSort, DefaultGranularity, DefaultTrendMode, SettingsField } from '../shared/types'
 
 // The preference vocabulary is declared once in shared/types.ts; re-exported
 // here so client-side consumers keep their canonical import path.
-export type { DefaultFileSort, DefaultGranularity, DefaultTrendMode, SettingsField } from '../shared/types'
+export type { DefaultClipAxis, DefaultFileSort, DefaultGranularity, DefaultTrendMode, SettingsField } from '../shared/types'
 
 /** The bound settings scope (ctx.settingsScope.bind result), as consumed. */
 export interface SettingsScopeLike {
@@ -37,6 +37,7 @@ export interface SettingsState {
   granularity: DefaultGranularity
   mode: DefaultTrendMode
   fileSort: DefaultFileSort
+  clipAxis: DefaultClipAxis
   writable: boolean
 }
 
@@ -46,28 +47,31 @@ export interface ContextSettings {
   defaultGranularity(): DefaultGranularity
   defaultTrendMode(): DefaultTrendMode
   defaultFileSort(): DefaultFileSort
+  /** The ≀ axis-clip toggle value ('on' | 'off'), read reactively by the Context tab. */
+  defaultClipAxis(): DefaultClipAxis
   attach(scope: SettingsScopeLike): () => void
   /** Persist one preference choice (local echo, then the fenced scope write). */
   set(field: SettingsField, value: string): void
 }
 
-function prefsOf(value: unknown): { granularity?: DefaultGranularity; mode?: DefaultTrendMode; fileSort?: DefaultFileSort } {
+function prefsOf(value: unknown): { granularity?: DefaultGranularity; mode?: DefaultTrendMode; fileSort?: DefaultFileSort; clipAxis?: DefaultClipAxis } {
   if (value === null || typeof value !== 'object') return {}
   const v = value as Record<string, unknown>
   return {
     ...(v.defaultGranularity === 'step' || v.defaultGranularity === 'turn' ? { granularity: v.defaultGranularity } : {}),
     ...(v.defaultTrendMode === 'total' || v.defaultTrendMode === 'delta' ? { mode: v.defaultTrendMode } : {}),
     ...(v.defaultFileSort === 'count' || v.defaultFileSort === 'latest' || v.defaultFileSort === 'path' ? { fileSort: v.defaultFileSort } : {}),
+    ...(v.defaultClipAxis === 'on' || v.defaultClipAxis === 'off' ? { clipAxis: v.defaultClipAxis } : {}),
   }
 }
 
 export function createContextSettings(): ContextSettings {
-  let state: SettingsState = { status: 'loading', granularity: 'step', mode: 'total', fileSort: 'count', writable: false }
+  let state: SettingsState = { status: 'loading', granularity: 'step', mode: 'total', fileSort: 'count', clipAxis: 'on', writable: false }
   let scope: SettingsScopeLike | undefined
   const listeners = new Set<() => void>()
   const publish = (next: SettingsState): void => {
     if (next.status === state.status && next.granularity === state.granularity
-      && next.mode === state.mode && next.fileSort === state.fileSort && next.writable === state.writable) return
+      && next.mode === state.mode && next.fileSort === state.fileSort && next.clipAxis === state.clipAxis && next.writable === state.writable) return
     state = next
     for (const listener of listeners) listener()
   }
@@ -82,6 +86,7 @@ export function createContextSettings(): ContextSettings {
       granularity: prefs.granularity ?? state.granularity,
       mode: prefs.mode ?? state.mode,
       fileSort: prefs.fileSort ?? state.fileSort,
+      clipAxis: prefs.clipAxis ?? state.clipAxis,
       writable: snap.writable,
     })
   }
@@ -96,6 +101,7 @@ export function createContextSettings(): ContextSettings {
     defaultGranularity: () => state.granularity,
     defaultTrendMode: () => state.mode,
     defaultFileSort: () => state.fileSort,
+    defaultClipAxis: () => state.clipAxis,
     attach(bound) {
       scope = bound
       sync(bound)

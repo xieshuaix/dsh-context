@@ -90,6 +90,11 @@ export function makeContextView(
     // 'total' plots each request's cumulative composition, 'delta' its incremental change vs the previous one;
     // like granularity, the default is read at mount and in-chart toggling never writes back.
     const [trendMode, setTrendMode] = React.useState<'total' | 'delta'>(() => settings.defaultTrendMode())
+    // The ≀ axis-clip toggle from the plugin settings card (Settings → Plugins → Context). Unlike granularity/mode
+    // it is read LIVE — flipping the card's "Clip axis" control updates the chart immediately — so the
+    // control↔toggle link is visible without remounting the tab.
+    const [clipAxis, setClipAxis] = React.useState<'on' | 'off'>(() => settings.defaultClipAxis())
+    React.useEffect(() => settings.store.subscribe(() => setClipAxis(settings.defaultClipAxis())), [])
     // Strip-clicked turn: chart switches to turn granularity and scroll-centers that turn's bar, then clears via onFocusTurnHandled.
     const [focusTurn, setFocusTurn] = React.useState<number | null>(null)
     // Chat → Context jump: the assistant-action relay's one-shot request, held until the projection data is in, then resolved into a
@@ -382,6 +387,7 @@ export function makeContextView(
                       activeTurn={activeTurn}
                       granularity={granularity}
                       mode={trendMode}
+                      clip={clipAxis === 'on'}
                       focusTurn={focusTurn}
                       hoverCat={trendHoverCat}
                       onSelect={setSelectedSeq}

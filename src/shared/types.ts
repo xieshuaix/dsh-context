@@ -58,10 +58,14 @@ export type DefaultTrendMode = 'total' | 'delta'
 /** File Activity row order: most operations first, most-recently-touched first, or path ascending. */
 export type DefaultFileSort = 'count' | 'latest' | 'path'
 
+/** Adaptive y-axis clipping on the Context Trend chart (the ≀ outlier clip): 'on' (default) keeps the clip, 'off' disables it. */
+export type DefaultClipAxis = 'on' | 'off'
+
 export interface PluginSettings {
   defaultGranularity: DefaultGranularity
   defaultTrendMode: DefaultTrendMode
   defaultFileSort: DefaultFileSort
+  defaultClipAxis: DefaultClipAxis
 }
 
 /** The section fields the settings card edits, as the Host schema names them. */

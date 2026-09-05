@@ -23,7 +23,7 @@ export const SETTINGS_NAMESPACE = 'dsh-context'
 
 // The preference vocabulary is declared once in shared/types.ts; re-exported
 // here so host-side consumers keep their canonical import path.
-export type { DefaultFileSort, DefaultGranularity, DefaultTrendMode, PluginSettings } from '../shared/types'
+export type { DefaultFileSort, DefaultGranularity, DefaultTrendMode, DefaultClipAxis, PluginSettings } from '../shared/types'
 
 /** Section schema: also the wire envelope the browser scope validates against. */
 export const SettingsSchema: z<PluginSettings> = z.object({
@@ -31,6 +31,8 @@ export const SettingsSchema: z<PluginSettings> = z.object({
   // Loose: a stale persisted value degrades to the default instead of breaking the section.
   defaultTrendMode: z.union(['total', 'delta']).default('total').loose(),
   defaultFileSort: z.union(['count', 'latest', 'path']).default('count').loose(),
+  // The ≀ axis-clip toggle. Default 'on' preserves the clip feature's behavior; 'off' turns it off.
+  defaultClipAxis: z.union(['on', 'off']).default('on').loose(),
 })
 
 /** Serve the namespace while a settings provider is composed; inert otherwise. */
