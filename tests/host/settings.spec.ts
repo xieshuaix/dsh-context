@@ -69,6 +69,7 @@ describe('installSettings', () => {
       defaultGranularity: 'step',
       defaultTrendMode: 'total',
       defaultFileSort: 'count',
+      defaultClipAxis: 'on',
     }, 'schema defaults resolve')
   })
 
@@ -79,6 +80,7 @@ describe('installSettings', () => {
       defaultGranularity: 'turn',
       defaultTrendMode: 'total',
       defaultFileSort: 'count',
+      defaultClipAxis: 'on',
     }, 'the update resolves over the schema defaults')
     assert.deepEqual(provider.doc['dsh-context'], { defaultGranularity: 'turn' }, 'the provider persisted the section')
 
@@ -87,6 +89,7 @@ describe('installSettings', () => {
       defaultGranularity: 'turn',
       defaultTrendMode: 'delta',
       defaultFileSort: 'path',
+      defaultClipAxis: 'on',
     }, 'every preference field resolves independently')
 
     await assert.rejects(
@@ -99,6 +102,7 @@ describe('installSettings', () => {
       defaultGranularity: 'turn',
       defaultTrendMode: 'delta',
       defaultFileSort: 'count',
+      defaultClipAxis: 'on',
     }, 'a stale file sort degrades to the schema default')
     assert.deepEqual(provider.doc['dsh-context'], { defaultGranularity: 'turn', defaultTrendMode: 'delta', defaultFileSort: 'net' }, 'the stale value stays raw in storage and degrades at read')
   })

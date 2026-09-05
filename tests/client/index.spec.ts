@@ -310,7 +310,7 @@ describe('client entry: settings card slot', () => {
     assert.ok(query(m.container, '.lc-settings-card'))
     await click(query(m.container, '.lc-settings-head'))
     const selects = queryAll(m.container, '.lc-settings-select')
-    assert.equal(selects.length, 3)
+    assert.equal(selects.length, 4)
     for (const s of selects) assert.ok((s as HTMLButtonElement).disabled)
     await m.unmount()
     ctx.dispose()

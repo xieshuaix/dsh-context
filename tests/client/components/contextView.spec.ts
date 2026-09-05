@@ -142,6 +142,19 @@ describe('ContextView — projection guards', () => {
     await m.unmount()
   })
 
+  test('the ≀ axis-clip setting live-updates via the settings store (subscribe)', async () => {
+    const settings = createContextSettings()
+    const View = makeView(new TestClientCtx(), settings)
+    // Populated timeline → the trend chart is mounted (not the empty arm), so the clip prop is actually exercised.
+    const m = await mount(h(View, { useProjection: projectionsFor(richTimeline()) }))
+    assert.ok(text(m.container).includes(DICT_EN.footer))
+    // Changing the setting notifies the view's clipAxis subscriber (re-reads the setting, re-renders the chart).
+    await act(async () => { settings.set('defaultClipAxis', 'off') })
+    await flush()
+    assert.ok(text(m.container).includes(DICT_EN.footer))
+    await m.unmount()
+  })
+
   test('a corrupt timeline is sanitized and the whole tab still renders empty-section states', async () => {
     const View = makeView(new TestClientCtx())
     const m = await mount(h(View, {

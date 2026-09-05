@@ -35,8 +35,27 @@ type LayoutEl = HTMLElement & { __clientW?: number; __scrollL?: number; __scroll
 let saved: [string, PropertyDescriptor | undefined][] = []
 
 beforeAll(() => {
-  saved = (['scrollWidth', 'clientWidth', 'scrollLeft'] as const)
+  saved = (['scrollWidth', 'clientWidth', 'scrollLeft', 'getBoundingClientRect'] as const)
     .map((name): [string, PropertyDescriptor | undefined] => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)])
+  // Realistic axis geometry so the ≀ break-marker layout effect (which reads getBoundingClientRect) can position
+  // the marker rather than always skipping in jsdom's all-zero report.
+  Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+    configurable: true,
+    value(this: Element): DOMRect {
+      const el = this as HTMLElement
+      const cls = el.className || ''
+      const inlineTop = el.style ? parseFloat(el.style.top) : NaN
+      let top = 0
+      let height = 0
+      if (cls.includes('lc-axis-clip')) { top = 0; height = 15 }
+      else if (cls.includes('lc-axis-top')) { top = 13; height = 11 }
+      else if (cls.includes('lc-axis-mid')) { top = Number.isFinite(inlineTop) ? inlineTop : 69; height = 11 }
+      else if (cls.includes('lc-axis-bot')) { top = 125; height = 11 }
+      else if (cls.includes('lc-axis')) { top = 0; height = 150 }
+      else if (cls.includes('lc-bar')) { top = 0; height = 112 }
+      return { top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top } as DOMRect
+    },
+  })
   Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
     configurable: true,
     get(this: LayoutEl): number {
@@ -140,18 +159,14 @@ async function scrollEvent(el: Element): Promise<void> {
 describe('TrendChart empty history', () => {
   test('renders the chart frame with no bars and no turn blocks', async () => {
     // The 'trend.empty' placeholder is the parent's (contextView) render arm; with zero requests the chart itself
-    // renders an empty frame: unit axis (maxTotal floors at 1), empty scroll content, empty turn strip.
+    // renders an empty frame: no fabricated cap label, empty scroll content, empty turn strip.
     const m = await mount(h(TrendChart, propsOf([])))
     assert.equal(bars(m.container).length, 0)
     assert.equal(queryAll(m.container, '.lc-turn').length, 0)
-    assert.equal(query(m.container, '.lc-axis-top').textContent, '1')
-    assert.equal(query(m.container, '.lc-axis-q3').textContent, '1')
-    assert.equal(query(m.container, '.lc-axis-mid').textContent, '1')
-    assert.equal(query(m.container, '.lc-axis-q1').textContent, '0')
+    assert.equal(queryAll(m.container, '.lc-axis-top').length, 0, 'no fabricated cap for an empty history')
     assert.equal(query(m.container, '.lc-axis-bot').textContent, '0')
-    assert.ok(query(m.container, '.lc-grid-mid'), 'total mode keeps the dashed mid grid')
-    assert.ok(query(m.container, '.lc-grid-q3'), 'total mode keeps the dashed quarter guides')
-    assert.ok(query(m.container, '.lc-grid-q1'), 'total mode keeps the dashed quarter guides')
+    assert.equal(queryAll(m.container, '.lc-axis-q3').length, 0, 'no fabricated quarter label')
+    assert.equal(queryAll(m.container, '.lc-axis-q1').length, 0)
     assert.ok(query(m.container, '.lc-grid-zero'), 'total mode draws the solid zero baseline at the chart floor')
     await m.unmount()
   })
@@ -182,12 +197,10 @@ describe('TrendChart step granularity, total mode', () => {
     assert.equal(segs3.length, 5)
     assert.ok(![...segs3].some(s => s.style.background.includes('34, 197, 94') || s.style.background === '#22c55e'))
 
-    // Total-mode axis: full quartile graduation — max, ¾, ½, ¼, 0.
+    // Total-mode axis: only the real cap (max) and the baseline 0.
     assert.equal(query(m.container, '.lc-axis-top').textContent, '600')
-    assert.equal(query(m.container, '.lc-axis-q3').textContent, '450')
-    assert.equal(query(m.container, '.lc-axis-mid').textContent, '300')
-    assert.equal(query(m.container, '.lc-axis-q1').textContent, '150')
     assert.equal(query(m.container, '.lc-axis-bot').textContent, '0')
+    assert.equal(queryAll(m.container, '.lc-axis-q3, .lc-axis-mid, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
 
     // Turn strip: T1 spans two step columns (2*16-2 = 30px), the turnless request lands in group T0 (14px);
     // zebra fills alternate and stay disjoint from the category palette.
@@ -233,11 +246,27 @@ describe('TrendChart step granularity, total mode', () => {
     await m.unmount()
   })
 
-  test('a zero-only history keeps the unit scale (maxTotal floors at 1)', async () => {
+  test('a zero-only history has no real cap, so the axis omits it and keeps only the true 0 baseline', async () => {
     const zero = req(1, { turn: 1, step: 0, system: 0, tools: 0, user: 0, inject: 0, assistant: 0, tool: 0, total: 0 })
     const m = await mount(h(TrendChart, propsOf([zero])))
-    assert.equal(query(m.container, '.lc-axis-top').textContent, '1')
+    assert.equal(queryAll(m.container, '.lc-axis-top').length, 0, 'no fabricated cap for an all-zero history')
+    assert.equal(query(m.container, '.lc-axis-bot').textContent, '0')
     assert.equal(queryAll(bars(m.container)[0], '.lc-bar-stack > div').length, 0)
+    await m.unmount()
+  })
+
+  test('a dominant total outlier clips the axis and emits the ≀ marker there', async () => {
+    const outs = [
+      req(1, { total: 100, prompt: 100 }),
+      req(2, { total: 110, prompt: 110 }),
+      req(3, { total: 120, prompt: 120 }),
+      req(4, { total: 130, prompt: 130 }),
+      req(5, { total: 5000, prompt: 5000 }), // dominant outlier
+    ]
+    const m = await mount(h(TrendChart, propsOf(outs, { mode: 'total' })))
+    assert.equal(queryAll(m.container, '.lc-axis-q3, .lc-axis-mid, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
+    assert.equal(queryAll(m.container, '.lc-axis-clip[data-clip="up"]').length, 1, 'total clip marker rendered')
+    assert.ok(query(m.container, '.lc-axis-top').textContent !== '', 'a real cap is labelled')
     await m.unmount()
   })
 })
@@ -253,18 +282,12 @@ describe('TrendChart delta mode', () => {
 
     // maxUp=60 (grown: +10 x6), maxDown=120 (shrunk: -20 x6) → scale 112/180, zero line at upPx=37.
     assert.equal(query(m.container, '.lc-axis-top').textContent, '+60')
-    // Quarter marks sit on the uniform scale: +15 above (height ¼), -75 below (height ¾). The +15 mark's
-    // label box (top 41) is 9px from the zero label's (13+37=50) — under one 11px label height — so it
-    // drops itself instead of overlapping the zero reference; the -75 mark stays.
-    assert.equal(queryAll(m.container, '.lc-axis-q3').length, 0)
-    assert.equal(query(m.container, '.lc-axis-q1').textContent, '-75')
+    // Only the real caps and 0 are labelled — no fabricated quarter values.
     assert.equal(query(m.container, '.lc-axis-mid').textContent, '0')
     assert.equal(query(m.container, '.lc-axis-mid').style.top, `${13 + 37}px`)
     assert.equal(query(m.container, '.lc-axis-bot').textContent, '-120')
+    assert.equal(queryAll(m.container, '.lc-axis-q3, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
     assert.equal(query(m.container, '.lc-grid-zero').style.top, `${18 + 37}px`)
-    // Each surviving quarter mark keeps its dashed guide; the mark that yielded to the zero label drops it too.
-    assert.equal(queryAll(m.container, '.lc-grid-q3').length, 0)
-    assert.ok(query(m.container, '.lc-grid-q1'))
 
     const bs = bars(m.container)
     // First bar starts from zero: both diverging stacks render empty.
@@ -301,43 +324,84 @@ describe('TrendChart delta mode', () => {
   test('growth-only history zeroes the negative axis arm; shrink-only zeroes the positive arm', async () => {
     const up = await mount(h(TrendChart, propsOf([zeroReq, base], { mode: 'delta' })))
     assert.equal(query(up.container, '.lc-axis-top').textContent, '+300')
-    // Zero line pinned to the chart bottom (upPx 112) clears both quarter marks: +225 / +75.
-    assert.equal(query(up.container, '.lc-axis-q3').textContent, '+225')
-    assert.equal(query(up.container, '.lc-axis-q1').textContent, '+75')
-    assert.equal(query(up.container, '.lc-axis-bot').textContent, '0')
-    assert.ok(query(up.container, '.lc-grid-q3'))
-    assert.ok(query(up.container, '.lc-grid-q1'))
+    // maxDown=0 (no down bars): the bottom cap label is omitted (it would just repeat the 0 line), and only the
+    // real caps + 0 are labelled.
+    assert.equal(query(up.container, '.lc-axis-mid').textContent, '0')
+    assert.equal(queryAll(up.container, '.lc-axis-bot').length, 0, 'empty down arm has no bottom label')
+    assert.equal(queryAll(up.container, '.lc-axis-q3, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
     const upSegs = queryAll(bars(up.container)[1], '.lc-bar-up > div')
     assert.equal(upSegs.length, 6)
     assert.equal(upSegs[0].style.height, `${Math.round(100 * CHART_H / 300)}px`)
     await up.unmount()
 
     const down = await mount(h(TrendChart, propsOf([base, zeroReq], { mode: 'delta' })))
-    // Zero line pinned to the chart top (upPx 0): the quarter marks read -75 / -225.
-    assert.equal(query(down.container, '.lc-axis-top').textContent, '0')
-    assert.equal(query(down.container, '.lc-axis-q3').textContent, '-75')
-    assert.equal(query(down.container, '.lc-axis-q1').textContent, '-225')
+    // maxUp=0 (no up bars): the top cap label is omitted; only the real caps + 0 are shown.
+    assert.equal(query(down.container, '.lc-axis-mid').textContent, '0')
+    assert.equal(queryAll(down.container, '.lc-axis-top').length, 0, 'empty up arm has no top label')
     assert.equal(query(down.container, '.lc-axis-bot').textContent, '-300')
-    assert.ok(query(down.container, '.lc-grid-q3'))
-    assert.ok(query(down.container, '.lc-grid-q1'))
+    assert.equal(queryAll(down.container, '.lc-axis-q3, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
     assert.equal(queryAll(bars(down.container)[1], '.lc-bar-down > div').length, 6)
     await down.unmount()
   })
 
-  test('a quarter mark landing on the zero label drops itself; the opposite mark keeps its place', async () => {
-    // maxUp=90 (+90 system), maxDown=30 (-30 tools) → upPx 84: the zero label (top 97) sits exactly on the
-    // ¼-height mark (top 97), which drops itself; the ¾-height mark renders +60 well clear of it.
+  test('a dominant down arm centres the zero line; only real caps + 0 are labelled', async () => {
+    // maxUp=90 (+90 system), maxDown=30 (-30 tools) → upPx 84.
     const flat = req(1, { turn: 1, step: 0, system: 0, tools: 30, user: 0, inject: 0, assistant: 0, tool: 0, total: 30 })
     const mixed = req(2, { turn: 1, step: 1, system: 90, tools: 0, user: 0, inject: 0, assistant: 0, tool: 0, total: 90 })
     const m = await mount(h(TrendChart, propsOf([flat, mixed], { mode: 'delta' })))
     assert.equal(query(m.container, '.lc-axis-top').textContent, '+90')
-    assert.equal(query(m.container, '.lc-axis-q3').textContent, '+60')
-    assert.equal(queryAll(m.container, '.lc-axis-q1').length, 0)
     assert.equal(query(m.container, '.lc-axis-mid').textContent, '0')
     assert.equal(query(m.container, '.lc-axis-mid').style.top, `${13 + 84}px`)
     assert.equal(query(m.container, '.lc-axis-bot').textContent, '-30')
-    assert.ok(query(m.container, '.lc-grid-q3'))
-    assert.equal(queryAll(m.container, '.lc-grid-q1').length, 0)
+    assert.equal(queryAll(m.container, '.lc-axis-q3, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
+    await m.unmount()
+  })
+
+  test('a clipped peak renders the ≀ break marker on the correct side and the outlier bar is cut', async () => {
+    // 5 bars with a small +100/+100/+100 up body and one huge -1250 down delta → the down side is clipped.
+    const clipped = [
+      req(1, { system: 1000, total: 1000 }),
+      req(2, { system: 1100, total: 1100 }),
+      req(3, { system: 1200, total: 1200 }),
+      req(4, { system: 1300, total: 1300 }),
+      req(5, { system: 50, total: 50 }), // huge down delta
+    ]
+    const m = await mount(h(TrendChart, propsOf(clipped, { mode: 'delta' })))
+    // Real values only, on the correct side: the down cap (-100, the body-top magnitude) and the 0 line.
+    assert.equal(query(m.container, '.lc-axis-top').textContent, '+100')
+    assert.equal(query(m.container, '.lc-axis-mid').textContent, '0')
+    assert.equal(query(m.container, '.lc-axis-bot').textContent, '-100')
+    assert.equal(queryAll(m.container, '.lc-axis-q3, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
+    // The axis break marker is emitted on the clipped (down) side and positioned INSIDE the arm by the layout effect.
+    assert.equal(queryAll(m.container, '.lc-axis-clip[data-clip="down"]').length, 1)
+    assert.equal(queryAll(m.container, '.lc-axis-clip[data-clip="up"]').length, 0, 'up side is not clipped')
+    // Position: the down marker sits ABOVE the bottom cap label (top 125 per the geometry shim), never overlapping it.
+    const downTop = parseFloat((query(m.container, '.lc-axis-clip[data-clip="down"]') as HTMLElement).style.top)
+    assert.ok(downTop > 0 && downTop < 125, `down break marker placed in the arm (top ${downTop}), not on the label`)
+    // The ≀ cut marker appears ONLY on the axis, never on the bars.
+    assert.equal(queryAll(m.container, '.lc-clip-cap').length, 0, 'no per-bar ≀ cut marker; the break reads on the axis only')
+    await m.unmount()
+  })
+
+  test('an up-dominant peak clips the up side and emits the ≀ marker there', async () => {
+    // A small +50 up body and one huge +1800 up spike → the up side is clipped.
+    const clippedUp = [
+      req(1, { system: 50, total: 50 }),
+      req(2, { system: 100, total: 100 }),
+      req(3, { system: 150, total: 150 }),
+      req(4, { system: 200, total: 200 }),
+      req(5, { system: 2000, total: 2000 }), // huge up delta
+    ]
+    const m = await mount(h(TrendChart, propsOf(clippedUp, { mode: 'delta' })))
+    assert.equal(query(m.container, '.lc-axis-top').textContent, '+50')
+    assert.equal(query(m.container, '.lc-axis-mid').textContent, '0')
+    assert.equal(queryAll(m.container, '.lc-axis-bot').length, 0, 'empty down arm omits the bottom cap label')
+    assert.equal(queryAll(m.container, '.lc-axis-q3, .lc-axis-q1').length, 0, 'no fabricated quarter labels')
+    assert.equal(queryAll(m.container, '.lc-axis-clip[data-clip="up"]').length, 1)
+    assert.equal(queryAll(m.container, '.lc-axis-clip[data-clip="down"]').length, 0)
+    // Position: the up marker sits BELOW the top cap label (bottom 24 per the geometry shim), never overlapping it.
+    const upTop = parseFloat((query(m.container, '.lc-axis-clip[data-clip="up"]') as HTMLElement).style.top)
+    assert.ok(upTop > 24, `up break marker placed below the top label (top ${upTop}), not on it`)
     await m.unmount()
   })
 })

@@ -65,7 +65,7 @@ describe('SettingsCard', () => {
     assert.equal(head.getAttribute('aria-label'), `${DICT_EN['settings.collapse']}: ${DICT_EN['settings.title']}`)
     assert.ok(card.className.includes('lc-settings-open'))
     const selects = queryAll(m.container, '.lc-settings-select')
-    assert.equal(selects.length, 3)
+    assert.equal(selects.length, 4)
     assert.ok(selects.every(s => (s as HTMLButtonElement).disabled))
     // Loading is not ready: no read-only note.
     assert.equal(m.container.querySelector('.lc-settings-note'), null)
@@ -91,7 +91,8 @@ describe('SettingsCard', () => {
     assert.ok(text(selects[0]).includes(DICT_EN['gran.step']))
     assert.ok(text(selects[1]).includes(DICT_EN['gran.total']))
     assert.ok(text(m.container).includes(DICT_EN['settings.fileSort']))
-    assert.ok(text(selects[2]).includes(DICT_EN['files.sort.count']))
+    assert.ok(text(selects[2]).includes(DICT_EN['settings.on']))
+    assert.ok(text(selects[3]).includes(DICT_EN['files.sort.count']))
 
     await click(selects[0])
     assert.equal(selects[0].getAttribute('aria-expanded'), 'true')
@@ -113,7 +114,7 @@ describe('SettingsCard', () => {
     assert.equal(document.body.querySelector('[role="menu"]'), null)
 
     // The file-sort row writes the third field.
-    await click(selects[2])
+    await click(selects[3])
     const sortItems = menuItems()
     assert.deepEqual(sortItems.map(i => text(i)), [
       DICT_EN['files.sort.count'],
@@ -125,6 +126,19 @@ describe('SettingsCard', () => {
       ['defaultGranularity', 'turn'],
       ['defaultTrendMode', 'delta'],
       ['defaultFileSort', 'path'],
+    ])
+    assert.equal(document.body.querySelector('[role="menu"]'), null)
+
+    // The clip-axis row writes its own field.
+    await click(selects[2])
+    const clipItems = menuItems()
+    assert.deepEqual(clipItems.map(i => text(i)), [DICT_EN['settings.on'], DICT_EN['settings.off']])
+    await click(clipItems[1]) // 'Off'
+    assert.deepEqual(calls, [
+      ['defaultGranularity', 'turn'],
+      ['defaultTrendMode', 'delta'],
+      ['defaultFileSort', 'path'],
+      ['defaultClipAxis', 'off'],
     ])
     assert.equal(document.body.querySelector('[role="menu"]'), null)
 
@@ -189,7 +203,7 @@ describe('SettingsCard', () => {
       const card = query(m.container, '.lc-settings-card')
       assert.ok(card.className.includes('lc-settings-open'))
       assert.equal(query(m.container, '.lc-settings-head').getAttribute('aria-expanded'), 'true')
-      assert.equal(queryAll(m.container, '.lc-settings-select').length, 3)
+      assert.equal(queryAll(m.container, '.lc-settings-select').length, 4)
       assert.equal(scrolled.length, 1, 'the card scrolls itself into view')
       assert.deepEqual(scrolled[0].arg, { block: 'nearest' })
       assert.equal(scrolled[0].el, card)

@@ -10,6 +10,11 @@ import type { ViewKit } from '../viewkit'
 
 import { React } from '../react'
 
+import { computeScale } from './trendChartClip'
+import { anchorOf, barTotalOf, deltaRequestsOf } from './trendChartData'
+import { visibleWindowOf } from './trendChartAdaptive'
+import { BAR_W, BAR_GAP, CHART_H, LABEL_GAP, LABEL_OVERHANG, TURN_FILLS } from './trendChartGeometry'
+
 export interface TrendChartProps {
   requests: RequestRecord[]
   markers: (ContextEventRecord | undefined)[]
@@ -108,20 +113,23 @@ export function clipMarkTop(mark: HTMLElement, mid: number, axisTop: number): nu
   // 1 — reference layout so the glyph's line box is measurable.
   mark.style.top = '0px'
   mark.style.transform = ''
-  // 2 — the glyph's real line box vs the span's own box.
+  // 2 — the glyph's real line box vs the span's own box. jsdom's Range has no getBoundingClientRect, so guard it
+  //     and fall back to centring the span box on `mid`.
   const range = document.createRange()
   range.selectNodeContents(mark)
-  const line = range.getBoundingClientRect()
+  const glyphBox = typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect() : null
   const spanBox = mark.getBoundingClientRect()
-  const lineCenterFromSpanTop = line.top + line.height / 2 - spanBox.top
-  // 3 — the ink's offset below the line-box centre, from the font metrics.
+  const lineCenterFromSpanTop = glyphBox !== null ? glyphBox.top + glyphBox.height / 2 - spanBox.top : 0
+  // 3 — the ink's offset below the line-box centre, from the font metrics. A canvas measure is the accurate way;
+  //     when no 2D context is available (jsdom, a subtle build) fall back to centring the line box on `mid`.
   const cs = getComputedStyle(mark)
-  const inkCtx = document.createElement('canvas').getContext('2d')!
+  const inkCtx = document.createElement('canvas').getContext('2d')
+  if (inkCtx === null) return Math.max(0, mid - lineCenterFromSpanTop)
   inkCtx.font = `${cs.fontSize} ${cs.fontFamily}`
   const ink = inkCtx.measureText('≀')
   const fontAscent = ink.fontBoundingBoxAscent != null ? ink.fontBoundingBoxAscent : 0
   const inkRelBaseline = (ink.actualBoundingBoxAscent - ink.actualBoundingBoxDescent) / 2
-  const inkFromLineCenter = (fontAscent - inkRelBaseline) - line.height / 2
+  const inkFromLineCenter = (fontAscent - inkRelBaseline) - (glyphBox !== null ? glyphBox.height : 0) / 2
   // 4 — the span top (relative to the axis) that lands the ink centre on `mid`.
   return Math.max(0, mid - lineCenterFromSpanTop - inkFromLineCenter)
 }
@@ -129,88 +137,8 @@ export function clipMarkTop(mark: HTMLElement, mid: number, axisTop: number): nu
 export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactNS.ReactElement {
   const { t, fmt, eventLabel, eventAt } = kit
 
-  const CHART_H = 112
-  // Quarter-mark label tops for the axis (mirrored to .lc-axis-q1/.lc-axis-q3 in trendChart.css): chart top 18
-  // plus a quarter/three-quarters of the 112px bar area, minus half the 11px label box (font-size 11, line-height 1).
-  const Q3_TOP = 41
-  const Q1_TOP = 97
-  // Outlier clip for the y-axis: the axis max is capped at CLIP_CAP × the robust per-request body scale
-  // (median magnitude), so a single peak that dwarfs the body is drawn truncated at the cap with a ≀ cut
-  // marker and its exact value stays in the hover tooltip / detail panel. A side is never clipped when the
-  // chart is too sparse to establish a body (MIN_BARS). All tunable.
-  const CLIP_CAP = 3
-  const MIN_BARS = 4
   // Delta axis ticks are signed: '+' only on positives — fmt already carries the minus for negatives.
   const fmtSigned = (v: number): string => (v > 0 ? '+' : '') + fmt(v)
-  // Constant bar width: sparse histories don't stretch bars, dense ones scroll instead of compressing; the turn strip below mirrors the
-  // same column grid.
-  const BAR_W = 14
-  const BAR_GAP = 2
-  // Neutral zebra, deliberately DISJOINT from the category palette — the strip must read as a partition layer, not a bottom segment of the
-  // composition bars.
-  const TURN_FILLS = ['rgba(128,128,128,0.12)', 'rgba(128,128,128,0.26)']
-  // Turn labels render at natural width (a 2-digit "T12" is wider than a 14px turn bar) and overflow their block, so
-  // near-viewport labels are thinned when they would collide. OVERHANG bounds how far such a label can reach beyond
-  // its block (a generous read of "T999" at 10px) for the viewport-participation test; GAP is the breathing room
-  // between kept labels' boxes.
-  const LABEL_OVERHANG = 48
-  const LABEL_GAP = 4
-
-  // Anchor bar HEIGHT to the provider-reported prompt when the request carried usage: categories keep their heuristic ratios but the height
-  // tracks the real billed tokens (matching the overview card and official chat ring), not the underpriced estimate.
-  const anchorOf = (req: RequestRecord): number =>
-    typeof req.prompt === 'number' && req.prompt > 0 && req.total > 0 ? req.prompt / req.total : 1
-  const barTotalOf = (req: RequestRecord): number =>
-    typeof req.prompt === 'number' && req.prompt > 0 ? req.prompt : req.total
-
-  /** Median of a set, or 0 for an empty set; the clip's robust "body" reference. */
-  const medianOf = (xs: number[]): number => {
-    const n = xs.length
-    if (n === 0) return 0
-    const s = [...xs].sort((a, b) => a - b)
-    const m = Math.floor(n / 2)
-    return n % 2 === 1 ? s[m] : (s[m - 1] + s[m]) / 2
-  }
-  /**
-   * Cap one axis side (delta up/down, or the total anchor) against a SHARED body scale. `bodyScale` is the
-   * robust (median) per-request magnitude. The axis max is NOT the (arbitrary) CLIP_CAP × bodyScale value,
-   * which usually matches no bar — it is the LARGEST REAL bar value still inside the clip limit, so an axis label
-   * always corresponds to an actual bar. True outliers above the limit are the ones clipped (`clipped` = true →
-   * truncated with a ≀ cut marker, exact value in the tooltip). Both sides share the same body scale, so capping
-   * one does not squeeze the other into a sliver (the zero line stays balanced). When the scale is not established
-   * (too few requests) `bodyScale` is 0 and nothing is clipped.
-   */
-  const clipCapOf = (sideExtents: number[], bodyScale: number): { cap: number; clipped: boolean } => {
-    const vals = sideExtents.filter(v => v > 0)
-    const peak = Math.max(1, ...vals)
-    const limit = bodyScale > 0 ? CLIP_CAP * bodyScale : Infinity
-    // Largest REAL bar value at or under the clip limit (so the axis top/bottom is a genuine data value). If every
-    // value is an outlier (no body inside the limit — rare), fall back to the smallest value.
-    const within = vals.filter(v => v <= limit)
-    const cap = within.length > 0 ? Math.max(...within) : (vals.length > 0 ? Math.min(...vals) : peak)
-    return { cap, clipped: cap < peak }
-  }
-
-  /**
-   * Delta mode: each category keeps the SIGNED change vs the previous record so bars can diverge
-   * above/below the zero line; `total` is the churn (summed magnitude), `net` the signed change
-   * for the tooltip; the first request starts from zero so the scale is change-driven, and per-request
-   * provider prompt/output are dropped (they are not deltas).
-   */
-  const deltaOf = (req: RequestRecord, prev: RequestRecord | null): RequestRecord => {
-    const { prompt: _prompt, output: _output, ...out } = req
-    let churn = 0
-    let net = 0
-    for (const c of CATS) {
-      const d = prev !== null ? (req[c.key] || 0) - (prev[c.key] || 0) : 0
-      out[c.key] = d
-      churn += Math.abs(d)
-      net += d
-    }
-    out.total = churn
-    out.net = net
-    return out
-  }
 
   interface ChartBarProps {
     req: RequestRecord
@@ -241,24 +169,6 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
     // Delta mode: diverging stacks — positive category deltas pile UP from the zero line, negative ones
     // hang DOWN from it, both in category colors (direction carries the sign, color the category).
     const diverge = props.upPx !== undefined && props.downPx !== undefined && props.deltaScale !== undefined
-    // Per-bar extent, for the ≀ cut markers: a bar is clipped when its side's extent exceeds the capped region.
-    // With no clip the cap equals the true max, so no bar exceeds it (≤ by construction); after a clip the
-    // outlier bar(s) exceed the cap and are the only ones flagged. An epsilon absorbs rounding.
-    let upSum = 0
-    let downSum = 0
-    let totalV = 0
-    for (const c of CATS) {
-      const d = req[c.key] || 0
-      if (diverge) {
-        if (d > 0) upSum += d
-        else if (d < 0) downSum -= d
-      } else {
-        totalV += (req[c.key] || 0) * anchorOf(req)
-      }
-    }
-    const upClipped = diverge && upSum * (props.deltaScale as number) > (props.upPx as number) + 0.5
-    const downClipped = diverge && downSum * (props.deltaScale as number) > (props.downPx as number) + 0.5
-    const totalClipped = !diverge && totalV > props.maxTotal + 0.5
     return (
       <div
         className={'lc-bar'
@@ -279,14 +189,13 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
         {diverge ? (
           <>
             {/* max-height + overflow:hidden cap a clipped side's stack at the axis, so an outlier bar reads as a
-                full-height column with a ≀ cut marker instead of spilling past the plot. Inert when no clip. */}
+                full-height column instead of spilling past the plot. Inert when no clip. */}
             <div className="lc-bar-up" style={{ bottom: `${props.downPx}px`, maxHeight: `${props.upPx}px`, overflow: 'hidden' }}>
               {CATS.map((c) => {
                 const d = req[c.key] || 0
                 if (d <= 0) return null
                 return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(d * (props.deltaScale as number)))}px`, background: c.color }} />
               })}
-              {upClipped ? <span className="lc-clip-cap">{'≀'}</span> : null}
             </div>
             <div className="lc-bar-down" style={{ top: `${props.upPx}px`, maxHeight: `${props.downPx}px`, overflow: 'hidden' }}>
               {CATS.map((c) => {
@@ -294,7 +203,6 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
                 if (d >= 0) return null
                 return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(-d * (props.deltaScale as number)))}px`, background: c.color }} />
               })}
-              {downClipped ? <span className="lc-clip-cap">{'≀'}</span> : null}
             </div>
           </>
         ) : (
@@ -305,7 +213,6 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
               // px (not %) heights: the stack is content-driven, so percentage heights would collapse against an indefinite base.
               return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(v / props.maxTotal * CHART_H))}px`, background: c.color }} />
             })}
-            {totalClipped ? <span className="lc-clip-cap">{'≀'}</span> : null}
           </div>
         )}
       </div>
@@ -315,75 +222,22 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
   return function TrendChart(props: TrendChartProps): ReactNS.ReactElement {
     const delta = props.mode === 'delta'
     const requests = React.useMemo(
-      () => (delta ? props.requests.map((req, i) => deltaOf(req, i > 0 ? props.requests[i - 1] : null)) : props.requests),
+      () => (delta ? deltaRequestsOf(props.requests) : props.requests),
       [props.requests, delta],
     )
     const markers = props.markers
-    // Collect the per-request extents, then cap each side's scale at a robust clip so a single outlier peak
-    // cannot dominate the y-axis. `upClipActive`/`downClipActive`/`totalClipActive` drive the ≀ cut markers on
-    // clipped bars and the axis hint; the caps (maxUp/maxDown/maxTotal) are what the axis bars are scaled to.
-    let maxTotal = 1
-    let maxUp = 0
-    let maxDown = 0
-    let upClipActive = false
-    let downClipActive = false
-    let totalClipActive = false
-    // The shared body scale: the median per-request magnitude. BOTH delta sides cap against it (so capping one
-    // never squeezes the other into a sliver), and the total anchor caps against it too.
-    const bodyScale = delta
-      ? medianOf(requests.map(r => {
-        let up = 0
-        let down = 0
-        for (const c of CATS) {
-          const d = r[c.key] || 0
-          if (d > 0) up += d
-          else down -= d
-        }
-        return up + down
-      }))
-      : medianOf(requests.map(r => barTotalOf(r)))
-    // The ≀ axis-clip is off when the plugin settings toggle disables it (`clip` prop), and additionally when the
-    // chart is too sparse to establish a body. `bodyRef = 0` makes clipCapOf return the raw (un-clipped) max.
-    const useClip = (props.clip ?? true) && requests.length >= MIN_BARS
-    const bodyRef = useClip ? bodyScale : 0
-    if (delta) {
-      const ups: number[] = []
-      const downs: number[] = []
-      for (const req of requests) {
-        let up = 0
-        let down = 0
-        for (const c of CATS) {
-          const d = req[c.key] || 0
-          if (d > 0) up += d
-          else down -= d
-        }
-        if (up > 0) ups.push(up)
-        if (down > 0) downs.push(down)
-      }
-      const upClip = clipCapOf(ups, bodyRef)
-      const downClip = clipCapOf(downs, bodyRef)
-      maxUp = upClip.cap
-      maxDown = downClip.cap
-      upClipActive = upClip.clipped
-      downClipActive = downClip.clipped
-    } else {
-      const totals: number[] = []
-      for (const req of requests) totals.push(barTotalOf(req))
-      const totalClip = clipCapOf(totals, bodyRef)
-      maxTotal = totalClip.cap
-      totalClipActive = totalClip.clipped
-    }
-    // The zero line splits the bar area PROPORTIONALLY to the larger side, so the px-per-token scale
-    // is identical above and below it — a compaction's downward bar reads honestly against a growth bar.
-    const span = Math.max(1, maxUp + maxDown)
-    const deltaScale = CHART_H / span
-    const upPx = Math.round(maxUp * deltaScale)
-    const downPx = CHART_H - upPx
-    // A delta quarter mark (axis label + its dashed guide) yields ENTIRELY when its 11px label box would
-    // overlap the zero label (top 13+upPx) — the zero line is the reading reference. Total-mode marks never
-    // collide and always render.
-    const q3Clear = Math.abs(Q3_TOP - 13 - upPx) >= 11
-    const q1Clear = Math.abs(Q1_TOP - 13 - upPx) >= 11
+    // ADAPTIVE-VIEWPORT CLIP: the y-axis is scaled to only the bars currently in the horizontal viewport (plus a
+    // small VIS_PAD buffer each side), so scrolling past a dominant outlier re-caps the axis to what the eye is
+    // actually reading rather than to the whole history's global peak. `visRange` is recomputed on scroll and after
+    // the auto-anchor repositions the right edge (see updateVisRange below); computeScale reads the window from it
+    // while ALL bars still render so the plot is dense and correct.
+    const [visRange, setVisRange] = React.useState<{ start: number; end: number }>(() => ({ start: 0, end: props.requests.length }))
+    // Resolve the y-axis scale (caps, clip flags, zero-line geometry) for the view horizon. `computeScale` runs the
+    // whole-body outlier fence and the per-side REAL-value caps; when `clip` is off it scales to the WHOLE list for
+    // a stable, non-adaptive reference.
+    const scale = computeScale(requests, { mode: props.mode, visStart: visRange.start, visEnd: visRange.end, clip: props.clip ?? true })
+    const { maxUp, maxDown, maxTotal, upClipActive, downClipActive, totalClipActive, deltaScale, upPx, downPx } = scale
+
 
     // Consecutive same-turn requests collapse into one labeled range; `span` counts the STEP columns the group covers (step records count
     // one each), so strip blocks align with the bars in both granularities.
@@ -428,6 +282,12 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
     // has to compare against the width as it was BEFORE the new bar landed — by the time the layout effect runs,
     // `el.scrollWidth` is already the new (wider) value, so a near-edge check against it would miss the auto-follow.
     const prevScrollWidthRef = React.useRef(0)
+    /** Recompute the adaptive-clip window from the scroller's geometry (see `visibleWindowOf`); only sets state when
+     * the range actually moves, so scrolling within a stable body keeps the bars' memoized scale props. */
+    const updateVisRange = (el: HTMLDivElement): void => {
+      const next = visibleWindowOf(el.scrollLeft, el.clientWidth, requests.length)
+      setVisRange(prev => (prev.start === next.start && prev.end === next.end ? prev : next))
+    }
     /**
      * Keep each turn label centered within its block's VISIBLE slice, then thin colliding labels: a label wider
      * than its block overflows it, so consecutive narrow turns (14px bars, 2-digit "T12"s) would smear into each
@@ -503,6 +363,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
       prevScrollWidthRef.current = el.scrollWidth
       updateTurnLabels(el)
       syncTip(el)
+      updateVisRange(el)
     }, [props.granularity, props.focusTurn, requests])
 
     // Compact 2-row hover tooltip, shown instantly by the custom `.lc-chart-tip` (the native title is delayed):
@@ -561,38 +422,42 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
       syncTip(scrollRef.current)
     })
 
-    // Center each ≀ break marker exactly between its two adjacent axis labels (the clipped extreme and the value
-    // next to it), measured pre-paint so the placement is independent of the glyph's line box. Which pair a mark
-    // sits between is decided here; the actual ink-centred coordinate math is the standalone `clipMarkTop`.
+    // Place each ≀ break marker just inside the plot from its clipped edge (below the up extreme, above the down
+    // extreme), so "the axis is cut here" reads at the frontier regardless of where the neighbouring labels sit. The
+    // ink-centring math lives in the standalone `clipMarkTop`.
     React.useLayoutEffect(() => {
       const axis = axisRef.current
       /* v8 ignore next 1 -- the axis div renders unconditionally while mounted, so its ref is set. */
       if (axis === null) return
       const axisR = axis.getBoundingClientRect()
-      const labels = Array.from(axis.querySelectorAll<HTMLElement>('.lc-axis span'))
-        .filter(el => !el.classList.contains('lc-axis-clip'))
-      const centerOn = (mark: HTMLElement, a: HTMLElement, b: HTMLElement): void => {
-        const ra = a.getBoundingClientRect()
-        const rb = b.getBoundingClientRect()
-        const mid = (ra.top + ra.height / 2 + rb.top + rb.height / 2) / 2 - axisR.top
-        // The coordinate math (ink-centred placement on the label midpoint) lives in the standalone `clipMarkTop`
-        // doc-commented helper, kept apart from the chart/scroll logic. This effect only picks the two adjacent
-        // labels and delegates.
-        mark.style.top = `${clipMarkTop(mark, mid, axisR.top)}px`
-        mark.style.transform = ''
-      }
+      // The zero label is the inner reference for the clip marker: for delta it is the moving 0 (upPx), for total the
+      // fixed 0 baseline. It is rendered unconditionally in both modes, so it is always present. The marker must stay
+      // INSIDE the clipped arm — never on the far side of the zero line.
+      const zero = axis.querySelector<HTMLElement>(delta ? '.lc-axis-mid' : '.lc-axis-bot')!
+      const zr = zero.getBoundingClientRect()
       axis.querySelectorAll<HTMLElement>('.lc-axis-clip').forEach((mark) => {
         const side = mark.dataset.clip
-        const extreme = side === 'up' ? axis.querySelector<HTMLElement>('.lc-axis-top')
-          : side === 'down' ? axis.querySelector<HTMLElement>('.lc-axis-bot') : null
+        // The clip markers are only ever emitted for the up or down side, so the extreme label is whichever exists.
+        const extreme = side === 'up' ? axis.querySelector<HTMLElement>('.lc-axis-top') : axis.querySelector<HTMLElement>('.lc-axis-bot')
+        /* v8 ignore next 1 -- the marker's side label (top/bot) renders whenever that side has bars, so it is never null. */
         if (extreme === null) return
-        const eR = extreme.getBoundingClientRect()
-        const neighbour = labels
-          .filter(el => el !== extreme && (side === 'up' ? el.getBoundingClientRect().top > eR.top : el.getBoundingClientRect().top < eR.top))
-          .sort((x, y) => side === 'up'
-            ? x.getBoundingClientRect().top - y.getBoundingClientRect().top
-            : y.getBoundingClientRect().top - x.getBoundingClientRect().top)[0]
-        if (neighbour !== undefined) centerOn(mark, side === 'up' ? extreme : neighbour, side === 'up' ? neighbour : extreme)
+        const r = extreme.getBoundingClientRect()
+        // Place the ≀ just inside the plot from the clipped CAP label (below the up cap, above the down cap), clear
+        // of both the cap label and the zero line, so it reads as "the axis is cut here" at the truncation frontier.
+        const capEdge = side === 'up' ? r.bottom : r.top
+        const zeroEdge = side === 'up' ? zr.top : zr.bottom
+        const armLen = Math.abs(zeroEdge - capEdge)
+        /* v8 ignore next 1 -- the fence caps both sides to ~bodyTop (balanced arms ≥ ~45px), so a clipped arm is
+           never this short; this guard is defensive. */
+        if (armLen < 26) return
+        const toward = side === 'up' ? 1 : -1
+        let inside = capEdge + toward * 14
+        // Clamp so the marker stays a glyph-height clear of the zero label (it must stay inside the clipped arm).
+        const zeroGap = side === 'up' ? zeroEdge - 14 : zeroEdge + 14
+        inside = side === 'up' ? Math.min(inside, zeroGap) : Math.max(inside, zeroGap)
+        const mid = inside - axisR.top
+        mark.style.top = `${clipMarkTop(mark, mid, axisR.top)}px`
+        mark.style.transform = ''
       })
     }, [delta, upClipActive, downClipActive, totalClipActive, requests, maxUp, maxDown, maxTotal, upPx])
 
@@ -601,31 +466,20 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
         <div className="lc-axis" ref={axisRef}>
           {delta ? (
             <>
-              {/* A clipped side is BROKEN: the ≀ marker sits BETWEEN the clipped extreme and the value below it,
-                  so "the axis is cut here" reads intuitively (the extreme label itself stays plain). */}
-              <span className="lc-axis-top">{fmtSigned(maxUp)}</span>
+              {/* Only REAL values are labelled: the two caps and the zero line. A clipped side is BROKEN — the ≀
+                  marker sits just inside the plot from the clipped edge (see the layout effect above), so "the axis
+                  is cut here" reads at the frontier and the true outlier stays in the tooltip. */}
+              {maxUp > 0 ? <span className="lc-axis-top">{fmtSigned(maxUp)}</span> : null}
               {upClipActive ? <span className="lc-axis-clip" data-clip="up">{'≀'}</span> : null}
-              {/* Axis quartile marks on the uniform px-per-token scale (the value at each fixed height); a mark
-                  whose 11px label box would overlap the zero label drops itself — the zero line is the reading
-                  reference and keeps its place. */}
-              {q3Clear
-                ? <span className="lc-axis-q3">{fmtSigned(Math.round(maxUp - span / 4))}</span>
-                : null}
-              {/* The 0 label rides the zero line (chart top padding 18px, half the 11px line-height up). */}
               <span className="lc-axis-mid" style={{ top: `${13 + upPx}px` }}>{'0'}</span>
-              {q1Clear
-                ? <span className="lc-axis-q1">{fmtSigned(Math.round(maxUp - 3 * span / 4))}</span>
-                : null}
               {downClipActive ? <span className="lc-axis-clip" data-clip="down">{'≀'}</span> : null}
-              <span className="lc-axis-bot">{fmtSigned(-maxDown)}</span>
+              {maxDown > 0 ? <span className="lc-axis-bot">{fmtSigned(-maxDown)}</span> : null}
             </>
           ) : (
             <>
-              <span className="lc-axis-top">{fmt(maxTotal)}</span>
+              {/* Only label a real cap; an empty/all-zero history omits it (keeps just the true 0 baseline). */}
+              {maxTotal > 0 ? <span className="lc-axis-top">{fmt(maxTotal)}</span> : null}
               {totalClipActive ? <span className="lc-axis-clip" data-clip="up">{'≀'}</span> : null}
-              <span className="lc-axis-q3">{fmt(Math.round(maxTotal * 3 / 4))}</span>
-              <span className="lc-axis-mid">{fmt(Math.round(maxTotal / 2))}</span>
-              <span className="lc-axis-q1">{fmt(Math.round(maxTotal / 4))}</span>
               <span className="lc-axis-bot">{'0'}</span>
             </>
           )}
@@ -640,6 +494,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
             onScroll={(e: ReactNS.UIEvent<HTMLDivElement>) => {
               updateTurnLabels(e.currentTarget)
               syncTip(e.currentTarget)
+              updateVisRange(e.currentTarget)
             }}
           >
             <div
@@ -650,12 +505,6 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
               onMouseLeave={() => { props.onHover(null) }}
             >
               <div className="lc-grid lc-grid-top" />
-              {/* Dashed guides aligning the bars with the axis quarter marks (fixed heights, both modes); a delta
-                  mark that yielded to the zero label drops its guide too, and a coinciding guide sits under the
-                  solid zero line painted after it. */}
-              {(!delta || q3Clear) ? <div className="lc-grid lc-grid-q3" /> : null}
-              {(!delta || q1Clear) ? <div className="lc-grid lc-grid-q1" /> : null}
-              {!delta ? <div className="lc-grid lc-grid-mid" /> : null}
               {/* The SOLID zero baseline — the reading reference in both modes: inline-positioned off the up-arm
                   in delta mode, the chart floor (CSS default) under the '0' label in total mode. */}
               <div className="lc-grid lc-grid-zero" style={delta ? { top: `${18 + upPx}px` } : undefined} />

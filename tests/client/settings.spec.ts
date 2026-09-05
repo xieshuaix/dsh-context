@@ -50,11 +50,13 @@ describe('createContextSettings defaults', () => {
       granularity: 'step',
       mode: 'total',
       fileSort: 'count',
+      clipAxis: 'on',
       writable: false,
     })
     assert.equal(s.defaultGranularity(), 'step')
     assert.equal(s.defaultTrendMode(), 'total')
     assert.equal(s.defaultFileSort(), 'count')
+    assert.equal(s.defaultClipAxis(), 'on')
   })
 })
 
@@ -135,7 +137,7 @@ describe('attach', () => {
     const s = createContextSettings()
     const scope = new TestSettingsScope({
       status: 'ready',
-      value: { defaultGranularity: 'turn', defaultTrendMode: 'delta', defaultFileSort: 'path' },
+      value: { defaultGranularity: 'turn', defaultTrendMode: 'delta', defaultFileSort: 'path', defaultClipAxis: 'off' },
       writable: true,
     })
     s.attach(scope)
@@ -144,8 +146,10 @@ describe('attach', () => {
       granularity: 'turn',
       mode: 'delta',
       fileSort: 'path',
+      clipAxis: 'off',
       writable: true,
     })
+    assert.equal(s.defaultClipAxis(), 'off')
   })
 
   test('an unavailable snapshot keeps parsed preferences', () => {
@@ -171,6 +175,7 @@ describe('attach', () => {
         granularity: 'step',
         mode: 'total',
         fileSort: 'count',
+        clipAxis: 'on',
         writable: false,
       })
     }
@@ -186,6 +191,7 @@ describe('attach', () => {
     assert.equal(s.defaultGranularity(), 'step')
     assert.equal(s.defaultTrendMode(), 'total')
     assert.equal(s.defaultFileSort(), 'count')
+    assert.equal(s.defaultClipAxis(), 'on')
   })
 
   test('explicit schema-default values are accepted', () => {
