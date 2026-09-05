@@ -20,12 +20,10 @@ import { aggregateByTurn, attachMarkers, jumpTargetOf, makeTrendChart, type Tren
 import { CATS } from '../../../src/client/categories'
 import type { ContextEventRecord, RequestRecord } from '../../../src/shared/types'
 import { click, flush, hover, makeKit, mount, query, queryAll, unhover } from '../helpers/kit'
+import { BAR_CELL, CHART_H } from '../helpers/trendChart'
 
 const kit = makeKit()
 const TrendChart = makeTrendChart(kit)
-
-const CHART_H = 112
-const BAR_CELL = 16 // BAR_W 14 + BAR_GAP 2
 
 /** Module-level default client width; tests may retarget it (with try/finally) before mounting. */
 let CLIENT_W = 400
