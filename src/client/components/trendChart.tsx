@@ -12,7 +12,7 @@ import { React } from '../react'
 
 import { computeScale } from './trendChartClip'
 import { anchorOf, barTotalOf, deltaRequestsOf } from './trendChartData'
-import { visibleWindowOf } from './trendChartAdaptive'
+import { visibleWindowOf, type VisibleWindow } from './trendChartAdaptive'
 import { BAR_W, BAR_GAP, CHART_H, LABEL_GAP, LABEL_OVERHANG, TURN_FILLS } from './trendChartGeometry'
 
 export interface TrendChartProps {
@@ -85,9 +85,9 @@ export function jumpTargetOf(requests: RequestRecord[], seq: number): RequestRec
 
 /**
  * Compute the CSS `top` (relative to the axis box) that places a ≀ break glyph so its INK is vertically centred
- * on `mid` — the midpoint of two adjacent axis value labels. This is self-contained coordinate math: it reads
- * only the glyph element, its target position, and the axis box top; everything else is derived from the
- * glyph's own box and the font's metrics. Kept apart from the chart/scroll/aggregation logic on purpose.
+ * on `mid` — the target position, already in axis-box coordinates (the caller offsets by the axis box top). This
+ * is self-contained coordinate math: it reads only the glyph element and `mid`; everything else is derived from
+ * the glyph's own box and the font's metrics. Kept apart from the chart/scroll/aggregation logic on purpose.
  *
  * Step by step:
  *
@@ -109,7 +109,7 @@ export function jumpTargetOf(requests: RequestRecord[], seq: number): RequestRec
  *
  * Returns the `top` in px relative to the axis box (no transform is needed).
  */
-export function clipMarkTop(mark: HTMLElement, mid: number, axisTop: number): number {
+export function clipMarkTop(mark: HTMLElement, mid: number): number {
   // 1 — reference layout so the glyph's line box is measurable.
   mark.style.top = '0px'
   mark.style.transform = ''
@@ -126,8 +126,11 @@ export function clipMarkTop(mark: HTMLElement, mid: number, axisTop: number): nu
   const inkCtx = document.createElement('canvas').getContext('2d')
   if (inkCtx === null) return Math.max(0, mid - lineCenterFromSpanTop)
   inkCtx.font = `${cs.fontSize} ${cs.fontFamily}`
-  const ink = inkCtx.measureText('≀')
-  const fontAscent = ink.fontBoundingBoxAscent != null ? ink.fontBoundingBoxAscent : 0
+  // fontBoundingBoxAscent is absent at runtime in canvas implementations without font metrics (despite the
+  // non-nullable TS type), so the metrics are read through an optionally-typed view.
+  const ink: { fontBoundingBoxAscent?: number; actualBoundingBoxAscent: number; actualBoundingBoxDescent: number } =
+    inkCtx.measureText('≀')
+  const fontAscent = ink.fontBoundingBoxAscent ?? 0
   const inkRelBaseline = (ink.actualBoundingBoxAscent - ink.actualBoundingBoxDescent) / 2
   const inkFromLineCenter = (fontAscent - inkRelBaseline) - (glyphBox !== null ? glyphBox.height : 0) / 2
   // 4 — the span top (relative to the axis) that lands the ink centre on `mid`.
@@ -169,6 +172,12 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
     // Delta mode: diverging stacks — positive category deltas pile UP from the zero line, negative ones
     // hang DOWN from it, both in category colors (direction carries the sign, color the category).
     const diverge = props.upPx !== undefined && props.downPx !== undefined && props.deltaScale !== undefined
+    // One arm's category segments: only deltas matching the arm's sign render (the opposite arm owns the rest).
+    const deltaSegs = (sign: 1 | -1): ReactNS.ReactNode => CATS.map((c) => {
+      const d = (req[c.key] || 0) * sign
+      if (d <= 0) return null
+      return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(d * (props.deltaScale as number)))}px`, background: c.color }} />
+    })
     return (
       <div
         className={'lc-bar'
@@ -191,18 +200,10 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
             {/* max-height + overflow:hidden cap a clipped side's stack at the axis, so an outlier bar reads as a
                 full-height column instead of spilling past the plot. Inert when no clip. */}
             <div className="lc-bar-up" style={{ bottom: `${props.downPx}px`, maxHeight: `${props.upPx}px`, overflow: 'hidden' }}>
-              {CATS.map((c) => {
-                const d = req[c.key] || 0
-                if (d <= 0) return null
-                return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(d * (props.deltaScale as number)))}px`, background: c.color }} />
-              })}
+              {deltaSegs(1)}
             </div>
             <div className="lc-bar-down" style={{ top: `${props.upPx}px`, maxHeight: `${props.downPx}px`, overflow: 'hidden' }}>
-              {CATS.map((c) => {
-                const d = req[c.key] || 0
-                if (d >= 0) return null
-                return <div key={c.key} data-cat={c.key} className="lc-cat-seg" style={{ height: `${Math.max(1, Math.round(-d * (props.deltaScale as number)))}px`, background: c.color }} />
-              })}
+              {deltaSegs(-1)}
             </div>
           </>
         ) : (
@@ -231,11 +232,14 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
     // actually reading rather than to the whole history's global peak. `visRange` is recomputed on scroll and after
     // the auto-anchor repositions the right edge (see updateVisRange below); computeScale reads the window from it
     // while ALL bars still render so the plot is dense and correct.
-    const [visRange, setVisRange] = React.useState<{ start: number; end: number }>(() => ({ start: 0, end: props.requests.length }))
+    const [visRange, setVisRange] = React.useState<VisibleWindow>(() => ({ start: 0, end: props.requests.length }))
     // Resolve the y-axis scale (caps, clip flags, zero-line geometry) for the view horizon. `computeScale` runs the
     // whole-body outlier fence and the per-side REAL-value caps; when `clip` is off it scales to the WHOLE list for
-    // a stable, non-adaptive reference.
-    const scale = computeScale(requests, { mode: props.mode, visStart: visRange.start, visEnd: visRange.end, clip: props.clip ?? true })
+    // a stable, non-adaptive reference. Memoized so hover/select re-renders don't re-run the fence + sort.
+    const scale = React.useMemo(
+      () => computeScale(requests, { mode: props.mode, visStart: visRange.start, visEnd: visRange.end, clip: props.clip ?? true }),
+      [requests, visRange, props.mode, props.clip],
+    )
     const { maxUp, maxDown, maxTotal, upClipActive, downClipActive, totalClipActive, deltaScale, upPx, downPx } = scale
 
 
@@ -431,9 +435,10 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
       if (axis === null) return
       const axisR = axis.getBoundingClientRect()
       // The zero label is the inner reference for the clip marker: for delta it is the moving 0 (upPx), for total the
-      // fixed 0 baseline. It is rendered unconditionally in both modes, so it is always present. The marker must stay
-      // INSIDE the clipped arm — never on the far side of the zero line.
-      const zero = axis.querySelector<HTMLElement>(delta ? '.lc-axis-mid' : '.lc-axis-bot')!
+      // fixed 0 baseline. The marker must stay INSIDE the clipped arm — never on the far side of the zero line.
+      const zero = axis.querySelector<HTMLElement>(delta ? '.lc-axis-mid' : '.lc-axis-bot')
+      /* v8 ignore next 1 -- the zero label renders unconditionally in both modes, so it is never null. */
+      if (zero === null) return
       const zr = zero.getBoundingClientRect()
       axis.querySelectorAll<HTMLElement>('.lc-axis-clip').forEach((mark) => {
         const side = mark.dataset.clip
@@ -456,7 +461,7 @@ export function makeTrendChart(kit: ViewKit): (props: TrendChartProps) => ReactN
         const zeroGap = side === 'up' ? zeroEdge - 14 : zeroEdge + 14
         inside = side === 'up' ? Math.min(inside, zeroGap) : Math.max(inside, zeroGap)
         const mid = inside - axisR.top
-        mark.style.top = `${clipMarkTop(mark, mid, axisR.top)}px`
+        mark.style.top = `${clipMarkTop(mark, mid)}px`
         mark.style.transform = ''
       })
     }, [delta, upClipActive, downClipActive, totalClipActive, requests, maxUp, maxDown, maxTotal, upPx])

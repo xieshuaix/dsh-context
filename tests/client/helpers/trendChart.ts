@@ -10,12 +10,12 @@ import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import { computeScale } from '../../../src/client/components/trendChartClip'
 import { sideExtentsOf } from '../../../src/client/components/trendChartData'
+import { BAR_GAP, BAR_W, CHART_H } from '../../../src/client/components/trendChartGeometry'
 import type { RequestRecord } from '../../../src/shared/types'
 
-/** Bar-area height (px) — must match CHART_H in trendChartGeometry.ts. */
-export const CHART_H = 112
-/** Bar column pitch (BAR_W 14 + BAR_GAP 2) — must match trendChartGeometry.ts. */
-export const BAR_CELL = 16
+export { CHART_H }
+/** Bar column pitch (BAR_W + BAR_GAP). */
+export const BAR_CELL = BAR_W + BAR_GAP
 
 /** A request record for delta/scale tests (all category counts 0, so the delta transform is fully controlled by the
  * `override`s; the `time`/`seq`/`turn`/`step` are a fixed but valid shape). */

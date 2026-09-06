@@ -12,16 +12,14 @@
 
 import assert from 'node:assert/strict'
 import { describe, test } from 'vitest'
-import { bodyTopOf, capSideOf, fenceOf, medianOf, quantileOf } from '../../../src/client/components/trendChartClip'
+import { bodyTopOf, capSideOf, fenceOf, quantileOf } from '../../../src/client/components/trendChartClip'
 import { deltaRequestsOf, sideExtentsOf } from '../../../src/client/components/trendChartData'
 import type { RequestRecord } from '../../../src/shared/types'
-import { assertRealCap, deltaReq, loadSessionFixture, scaleOf, windowExtents } from '../helpers/trendChart'
+import { assertRealCap, BAR_CELL, deltaReq, loadSessionFixture, scaleOf, windowExtents } from '../helpers/trendChart'
 
 describe('trendChartScale: stats helpers', () => {
-  test('medianOf / quantileOf behave for odd and even sets', () => {
-    assert.equal(medianOf([3, 1, 2]), 2)
-    assert.equal(medianOf([4, 1, 2, 3]), 2.5)
-    assert.equal(medianOf([]), 0)
+  test('quantileOf interpolates for odd and even sets (p=0.5 is the median)', () => {
+    assert.equal(quantileOf([1, 2, 3], 0.5), 2)
     assert.equal(quantileOf([1, 2, 3, 4], 0.5), 2.5)
     assert.equal(quantileOf([10], 0.5), 10)
   })
@@ -33,6 +31,20 @@ describe('trendChartScale: stats helpers', () => {
     const fence = fenceOf([...Array.from({ length: 30 }, () => 1600), 34800])
     assert.ok(fence < 8000, `huge outlier shouldn't inflate the fence (got ${fence})`)
   })
+
+  test('fenceOf is pinned numerically: Q3 + 2.5×IQR, with the 2.5×median floor deciding', () => {
+    // The Tukey term decides: sorted [1,2,3,4,5] → q1 2, q3 4, iqr 2 → 4 + 2.5×2 = 9 (> 2.5×median 7.5).
+    assert.equal(fenceOf([1, 2, 3, 4, 5]), 9)
+    // The floor decides: IQR 0 → q3 + 2.5×0 = 100, floored at 2.5×100 = 250 — so 240 survives ONLY because of
+    // the floor, and 260 is an outlier purely because of it.
+    const flat = [100, 100, 100, 100, 240]
+    assert.equal(fenceOf(flat), 250)
+    assert.equal(bodyTopOf(flat, 250), 240, '240 is inside the floored fence')
+    assert.deepEqual(capSideOf(flat, 250, 240, true), { cap: 240, clipped: false })
+    const peaked = [100, 100, 100, 100, 260]
+    assert.equal(fenceOf(peaked), 250)
+    assert.deepEqual(capSideOf(peaked, 250, 100, true), { cap: 100, clipped: true })
+  })
 })
 
 describe('trendChartScale: invariant on synthetic scenarios', () => {
@@ -40,7 +52,7 @@ describe('trendChartScale: invariant on synthetic scenarios', () => {
     const raw = [100, 150, 220, 300, 420, 560, 720].map((v, i) => deltaReq(i + 1, { system: v, total: v }))
     const delta = deltaRequestsOf(raw)
     const s = scaleOf(delta, { mode: 'delta', start: 0, end: delta.length, clip: true })
-    const { ups, downs, mags } = windowExtents(delta, 0, delta.length)
+    const { mags } = windowExtents(delta, 0, delta.length)
     assert.ok(s.maxUp > 0)
     assertRealCap(s.maxUp, mags, 'up cap')
     assert.equal(s.maxDown, 0, 'no down deltas in a monotonic stream')
@@ -64,7 +76,7 @@ describe('trendChartScale: invariant on synthetic scenarios', () => {
     ]
     const delta = deltaRequestsOf(raw)
     const s = scaleOf(delta, { mode: 'delta', start: 0, end: delta.length, clip: true })
-    const { ups, downs, mags } = windowExtents(delta, 0, delta.length)
+    const { downs, mags } = windowExtents(delta, 0, delta.length)
     assert.ok(downs.length >= 1, 'the compaction produces a down delta')
     assertRealCap(s.maxUp, mags, 'up cap')
     assertRealCap(s.maxDown, mags, 'down cap')
@@ -72,7 +84,7 @@ describe('trendChartScale: invariant on synthetic scenarios', () => {
     assert.equal(s.downClipActive, true, 'the compaction peak is clipped')
     assert.ok(s.maxDown < Math.max(...downs), 'down cap is below the true down peak')
     // Body readability: the cap is within a small multiple of the body median (not dominated).
-    const bodyMed = medianOf(mags)
+    const bodyMed = quantileOf([...mags].sort((a, b) => a - b), 0.5)
     assert.ok(s.maxDown <= bodyMed * 4, `down cap ${s.maxDown} should not dwarf the body median ${bodyMed}`)
   })
 
@@ -85,7 +97,7 @@ describe('trendChartScale: invariant on synthetic scenarios', () => {
     for (let i = 1; i <= 10; i++) raw.push(deltaReq(51 + i, { system: 50 + i * 400, total: 50 + i * 400 }))       // gradual recovery
     const delta = deltaRequestsOf(raw)
     const s = scaleOf(delta, { mode: 'delta', start: 0, end: delta.length, clip: true })
-    const { ups, downs, mags } = windowExtents(delta, 0, delta.length)
+    const { downs, mags } = windowExtents(delta, 0, delta.length)
     assert.ok(downs.length >= 1, 'the sharp drop produces a down delta')
     assertRealCap(s.maxUp, mags, 'up cap')
     assertRealCap(s.maxDown, mags, 'down cap (fallback is a real magnitude)')
@@ -111,7 +123,7 @@ describe('trendChartScale: invariant on synthetic scenarios', () => {
     assert.equal(before.maxUp, Math.max(...upsBefore), 'up cap is the true body max (no clip)')
     // Window straddling the spike (outlier present) — the dominant peak is clipped.
     const straddle = scaleOf(delta, { mode: 'delta', start: 14, end: 28, clip: true })
-    const { ups: upsStraddle, downs: downsStraddle, mags: magsStraddle } = windowExtents(delta, 14, 28)
+    const { downs: downsStraddle, mags: magsStraddle } = windowExtents(delta, 14, 28)
     assertRealCap(straddle.maxUp, magsStraddle, 'up cap (straddle)')
     assertRealCap(straddle.maxDown, magsStraddle, 'down cap (straddle)')
     assert.ok(downsStraddle.length >= 1, 'the straddling window contains the down spike')
@@ -145,17 +157,16 @@ describe('trendChartScale: captured real session', () => {
   const delta = deltaRequestsOf(raw)
 
   test('every displayed cap is a real magnitude across view horizons', () => {
-    const pitch = 16
     const viewW = 561 // the card's chart viewport width used in the GUI
     const horizons: [number, number][] = []
     for (let sl = 0; sl <= delta.length; sl += 200) {
-      const start = Math.max(0, Math.floor(sl / pitch))
-      const end = Math.min(delta.length, Math.ceil((sl + viewW) / pitch))
+      const start = Math.max(0, Math.floor(sl / BAR_CELL))
+      const end = Math.min(delta.length, Math.ceil((sl + viewW) / BAR_CELL))
       horizons.push([start, end])
     }
     for (const [start, end] of horizons) {
       const s = scaleOf(delta, { mode: 'delta', start: start, end: end, clip: true })
-      const { ups, downs, mags } = windowExtents(delta, start, end)
+      const { mags } = windowExtents(delta, start, end)
       assertRealCap(s.maxUp, mags, `up cap @[${start},${end}]`)
       assertRealCap(s.maxDown, mags, `down cap @[${start},${end}]`)
     }
@@ -203,7 +214,7 @@ describe('trendChartScale: edge cases', () => {
     const raw = [deltaReq(1, { system: 1000 }), deltaReq(2, { system: 850 }), deltaReq(3, { system: 700 }), deltaReq(4, { system: 550 }), deltaReq(5, { system: 400 })]
     const delta = deltaRequestsOf(raw)
     const s = scaleOf(delta, { mode: 'delta', start: 0, end: delta.length, clip: true })
-    const { ups, downs, mags } = windowExtents(delta, 0, delta.length)
+    const { ups, mags } = windowExtents(delta, 0, delta.length)
     assert.equal(ups.length, 0, 'every delta is a down extent')
     assert.equal(s.maxUp, 0, 'no up bars → up cap 0 (up arm empty)')
     assertRealCap(s.maxDown, mags, 'down cap')
@@ -220,7 +231,7 @@ describe('trendChartScale: edge cases', () => {
     raw.push(deltaReq(33, { system: 100, total: 100 }))  // a big down delta
     const delta = deltaRequestsOf(raw)
     const s = scaleOf(delta, { mode: 'delta', start: 0, end: delta.length, clip: true })
-    const { ups, downs, mags } = windowExtents(delta, 0, delta.length)
+    const { ups, mags } = windowExtents(delta, 0, delta.length)
     assertRealCap(s.maxUp, mags, 'up cap')
     assertRealCap(s.maxDown, mags, 'down cap')
     assert.ok(s.maxUp > 0 && s.maxDown > 0)

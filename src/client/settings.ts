@@ -54,7 +54,7 @@ export interface ContextSettings {
   set(field: SettingsField, value: string): void
 }
 
-function prefsOf(value: unknown): { granularity?: DefaultGranularity; mode?: DefaultTrendMode; fileSort?: DefaultFileSort; clipAxis?: DefaultClipAxis } {
+function prefsOf(value: unknown): Partial<Pick<SettingsState, 'granularity' | 'mode' | 'fileSort' | 'clipAxis'>> {
   if (value === null || typeof value !== 'object') return {}
   const v = value as Record<string, unknown>
   return {
@@ -70,8 +70,8 @@ export function createContextSettings(): ContextSettings {
   let scope: SettingsScopeLike | undefined
   const listeners = new Set<() => void>()
   const publish = (next: SettingsState): void => {
-    if (next.status === state.status && next.granularity === state.granularity
-      && next.mode === state.mode && next.fileSort === state.fileSort && next.clipAxis === state.clipAxis && next.writable === state.writable) return
+    if (next.status === state.status && next.granularity === state.granularity && next.mode === state.mode
+      && next.fileSort === state.fileSort && next.clipAxis === state.clipAxis && next.writable === state.writable) return
     state = next
     for (const listener of listeners) listener()
   }

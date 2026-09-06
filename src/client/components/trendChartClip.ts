@@ -23,7 +23,6 @@ export interface ScaleParams {
 }
 
 export interface ScaleResult {
-  mode: 'delta' | 'total'
   // Delta side caps (0 when the side is empty; total mode leaves these 0).
   maxUp: number
   maxDown: number
@@ -37,17 +36,6 @@ export interface ScaleResult {
   deltaScale: number
   upPx: number
   downPx: number
-  // The whole-body fence used (observability + tests).
-  fence: number
-}
-
-/** Median of a set, or 0 for an empty set; the clip's robust "body" reference. */
-export const medianOf = (xs: number[]): number => {
-  const n = xs.length
-  if (n === 0) return 0
-  const s = [...xs].sort((a, b) => a - b)
-  const m = Math.floor(n / 2)
-  return n % 2 === 1 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
 /** Linear-interpolated quantile of an ASCENDING-sorted array; p ∈ [0,1]. */
@@ -61,7 +49,7 @@ export const quantileOf = (sorted: number[], p: number): number => {
 }
 
 /**
- * Robust Tukey outlier fence over a set of magnitudes (Q3 + 1.5 × IQR, floored at CLIP_CAP × the median): a single
+ * Robust Tukey outlier fence over a set of magnitudes (Q3 + 2.5 × IQR, floored at CLIP_CAP × the median): a single
  * dominant peak is flagged as outside the body while a genuinely spread body raises the fence and stays uncapped.
  * Infinity when there are no positive magnitudes.
  */
@@ -71,7 +59,7 @@ export const fenceOf = (mags: number[]): number => {
   const sorted = [...vals].sort((a, b) => a - b)
   const q1 = quantileOf(sorted, 0.25)
   const q3 = quantileOf(sorted, 0.75)
-  const median = medianOf(sorted)
+  const median = quantileOf(sorted, 0.5)
   const iqr = q3 - q1
   // A conservative Tukey fence (2.5×IQR, not the classic 1.5×) so only EXTREME peaks are flagged as outliers — a
   // natural spread's upper tail stays visible instead of being cut and ≀-marked on every peak.
@@ -118,8 +106,8 @@ export const computeScale = (requests: RequestRecord[], p: ScaleParams): ScaleRe
   const useClip = clip && requests.length >= MIN_BARS
   const source = useClip ? requests.slice(visStart, visEnd) : requests
   const empty: ScaleResult = {
-    mode, maxUp: 0, maxDown: 0, maxTotal: 0, upClipActive: false, downClipActive: false, totalClipActive: false,
-    span: 1, deltaScale: 0, upPx: 0, downPx: CHART_H, fence: 0,
+    maxUp: 0, maxDown: 0, maxTotal: 0, upClipActive: false, downClipActive: false, totalClipActive: false,
+    span: 1, deltaScale: 0, upPx: 0, downPx: CHART_H,
   }
   if (mode === 'delta') {
     const ups: number[] = []
@@ -141,8 +129,8 @@ export const computeScale = (requests: RequestRecord[], p: ScaleParams): ScaleRe
     const upPx = Math.round(maxUp * deltaScale)
     const downPx = CHART_H - upPx
     return {
-      mode, maxUp, maxDown, maxTotal: 1, upClipActive: upClip.clipped, downClipActive: downClip.clipped,
-      totalClipActive: false, span, deltaScale, upPx, downPx, fence,
+      maxUp, maxDown, maxTotal: 1, upClipActive: upClip.clipped, downClipActive: downClip.clipped,
+      totalClipActive: false, span, deltaScale, upPx, downPx,
     }
   }
   const totals = source.map(barTotalOf)
@@ -153,6 +141,6 @@ export const computeScale = (requests: RequestRecord[], p: ScaleParams): ScaleRe
   // zero divisor by skipping 0-value segments, so an empty history keeps a unit scale internally without the axis
   // emitting a fabricated value — the caller only labels a cap when it is > 0.
   return {
-    ...empty, mode, maxTotal: totalClip.cap, totalClipActive: totalClip.clipped, fence,
+    ...empty, maxTotal: totalClip.cap, totalClipActive: totalClip.clipped,
   }
 }

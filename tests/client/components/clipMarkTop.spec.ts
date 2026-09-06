@@ -54,7 +54,7 @@ describe('clipMarkTop', () => {
     const { canvasCtx } = stubInputs({ lineTop: 5, lineHeight: 20, spanTop: 0, spanHeight: 15, fontAscent: 10, inkAscent: 8, inkDescent: 2 })
     // lineCenterFromSpanTop = (5 + 10) - 0 = 15. inkRelBaseline = (8-2)/2 = 3. fontAscent = 10.
     // inkFromLineCenter = (10 - 3) - 10 = -3. top = mid - 15 - (-3) = mid - 12.
-    const top = clipMarkTop(document.body.lastElementChild as HTMLElement, 50, 0)
+    const top = clipMarkTop(document.body.lastElementChild as HTMLElement, 50)
     assert.equal(top, 50 - 15 - -3)
     assert.ok(top >= 0)
     // The canvas font was set from the computed style before measuring.
@@ -62,8 +62,8 @@ describe('clipMarkTop', () => {
   })
 
   test('falls back to a 0 fontAscent when the canvas does not report a font bounding box', () => {
-    const { canvasCtx } = stubInputs({ lineTop: 0, lineHeight: 20, spanTop: 0, spanHeight: 15, fontAscent: undefined, inkAscent: 8, inkDescent: 2 })
-    const top = clipMarkTop(document.body.lastElementChild as HTMLElement, 40, 0)
+    stubInputs({ lineTop: 0, lineHeight: 20, spanTop: 0, spanHeight: 15, fontAscent: undefined, inkAscent: 8, inkDescent: 2 })
+    const top = clipMarkTop(document.body.lastElementChild as HTMLElement, 40)
     // fontAscent 0, inkRelBaseline 3 → inkFromLineCenter = -3 - 10 = -13; lineCenterFromSpanTop = 10.
     assert.equal(top, 40 - 10 - -13)
   })
@@ -78,7 +78,7 @@ describe('clipMarkTop', () => {
       selectNodeContents: () => {},
       getBoundingClientRect: () => fakeRect(5, 20),
     } as unknown as Range)
-    const top = clipMarkTop(mark, 30, 0)
+    const top = clipMarkTop(mark, 30)
     // lineCenterFromSpanTop = (5 + 10) - 0 = 15 → top = 30 - 15 = 15.
     assert.equal(top, 15)
   })
@@ -97,7 +97,7 @@ describe('clipMarkTop', () => {
       measureText: () => ({ width: 10, fontBoundingBoxAscent: 10, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 } as unknown as TextMetrics),
     }
     vi.spyOn(document, 'createElement').mockReturnValue({ getContext: () => canvasCtx } as unknown as HTMLCanvasElement)
-    const top = clipMarkTop(mark, 30, 0)
+    const top = clipMarkTop(mark, 30)
     // lineCenterFromSpanTop = 0 (glyphBox null); inkFromLineCenter = (10 - 3) - 0 = 7 → top = 30 - 0 - 7 = 23.
     assert.equal(top, 23)
   })

@@ -31,7 +31,7 @@ export const SettingsSchema: z<PluginSettings> = z.object({
   // Loose: a stale persisted value degrades to the default instead of breaking the section.
   defaultTrendMode: z.union(['total', 'delta']).default('total').loose(),
   defaultFileSort: z.union(['count', 'latest', 'path']).default('count').loose(),
-  // The ≀ axis-clip toggle. Default 'on' preserves the clip feature's behavior; 'off' turns it off.
+  // The ≀ axis-clip toggle (the clip is the feature's default behavior).
   defaultClipAxis: z.union(['on', 'off']).default('on').loose(),
 })
 
